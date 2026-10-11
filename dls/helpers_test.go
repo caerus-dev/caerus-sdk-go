@@ -103,9 +103,3 @@ func life(timeout time.Duration) *TransactionOptions {
 	return &TransactionOptions{Timeout: timeout}
 }
 
-func pause(ctx context.Context, duration time.Duration) {
-	select {
-	case <-ctx.Done():
-	case <-time.After(duration):
-	}
-}
