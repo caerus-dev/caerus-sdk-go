@@ -1,0 +1,143 @@
+syntax = "proto3";
+package caerus.sre.v1;
+
+import "google/protobuf/empty.proto";
+
+// --- ESTAS 3 LÍNEAS SON LA CLAVE ---
+option java_multiple_files = true; // Fuerza a crear un .java por cada message
+option java_package = "dev.caerus.proto.sre"; // El paquete donde vivirán en tu proyecto
+option java_outer_classname = "SharedResourceEngineProto"; // Nombre del archivo contenedor
+
+service SharedResourceEngine {
+  // Configuración de inventario
+  rpc CreateResource(CreateResourceRequest) returns (ResourceResponse);
+  rpc UpdateResource(UpdateResourceRequest) returns (ResourceResponse);
+  rpc DeleteResource(DeleteResourceRequest) returns (google.protobuf.Empty);
+
+  // Operaciones de negocio (Transaccionales)
+  rpc Take(TakeRequest) returns (ResourceHolderResponse);
+  rpc Confirm(ConfirmRequest) returns (ResourceHolderResponse);
+  rpc Release(ReleaseRequest) returns (google.protobuf.Empty);
+  rpc Extend(ExtendRequest) returns (ResourceHolderResponse);
+
+  // Queries
+  rpc GetResource(GetResourceRequest) returns (ResourceResponse);
+  rpc GetResourcesByGroupKey(GetResourcesByGroupKeyRequest) returns (GetResourcesByGroupKeyResponse);
+  rpc GetResourceHolder(GetResourceHolderRequest) returns (ResourceHolderResponse);
+  rpc GetResourceHoldersList(GetResourceHoldersListRequest) returns (GetResourceHoldersListResponse);
+}
+
+// --- MENSAJES DE PETICIÓN ---
+
+message CreateResourceRequest {
+  string template_name = 1;
+  string key = 2;
+  int32 available_amount = 3;
+  optional string group_key = 4;
+  optional string metadata = 5;
+}
+
+message UpdateResourceRequest {
+  string resource_key = 1;
+  int32 delta_amount = 2; // Can be positive or negative
+  optional string group_key = 3;
+  optional string metadata = 4; // JSON string
+  optional string idempotency_key = 5;
+}
+
+message DeleteResourceRequest {
+  string key = 1;
+}
+
+message TakeRequest {
+  string resource_key = 1;
+  int32 amount = 2;
+  TakeOptionalSettings settings = 3;
+}
+
+message TakeOptionalSettings {
+  optional string idempotency_key = 1;
+  optional int32 custom_ttl_seconds = 2;
+  optional string metadata = 3;
+}
+
+message ConfirmRequest {
+  string resource_holder_id = 1;
+  optional string metadata_patch = 2; // Opcional: Actualiza la metadata final (ej. payment_id)
+}
+
+message ReleaseRequest {
+  string resource_holder_id = 1;
+}
+
+message ExtendRequest {
+  string resource_holder_id = 1;
+  int32 extra_ms = 2;
+}
+
+message GetResourceRequest {
+  string key = 1;
+}
+
+message GetResourcesByGroupKeyRequest {
+  string group_key = 1;
+  int32 page = 2;
+  optional int32 page_size = 3;
+}
+
+message GetResourceHolderRequest {
+  string resource_holder_id = 1;
+}
+
+message GetResourceHoldersListRequest {
+  optional string resource_key = 1;
+  int32 page = 2;
+  optional int32 page_size = 3;
+  enum SortDirection {
+    DESCENDING = 0;
+    ASCENDING = 1;
+  }
+  optional SortDirection created_at_sort_direction = 4;
+  optional ResourceHolderResponse.ResourceHolderStatus status_filter = 5;
+}
+
+// --- MENSAJES DE RESPUESTA ---
+
+message ResourceResponse {
+  string resource_id = 1;
+  string key = 2;
+  string template_id = 3;
+  int32 available_amount = 4;
+  int32 pending_count = 5;
+  optional string group_key = 6;
+  optional string metadata = 7;
+  int64 created_at_ms = 8;
+  int64 updated_at_ms = 9;
+}
+
+message GetResourcesByGroupKeyResponse {
+  repeated ResourceResponse resources = 1;
+  bool next_page = 2;
+}
+
+message GetResourceHoldersListResponse {
+  repeated ResourceHolderResponse resource_holders = 1;
+  bool next_page = 2;
+}
+
+message ResourceHolderResponse {
+  enum ResourceHolderStatus {
+    PENDING = 0;
+    CONFIRMED = 1;
+    RELEASED = 2;
+    QUEUED = 3;
+    EXPIRED = 4;
+  }
+  string holder_id = 1;
+  string resource_id = 2;
+  ResourceHolderStatus status = 3;
+  int32 amount = 4;
+  int64 expires_at = 5;
+  optional string metadata = 6;
+  int64 created_at_ms = 7;
+}
