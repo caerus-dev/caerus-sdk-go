@@ -25,7 +25,7 @@ que nunca tiene que llegar a un cliente o a un navegador.
 
 ## Instalación
 
-Requiere Go 1.25 o superior.
+Requiere Go 1.26 o superior.
 
 ```bash
 go get github.com/caerus-dev/caerus-sdk-go

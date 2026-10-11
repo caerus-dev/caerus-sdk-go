@@ -10,7 +10,7 @@ directiva `retract` en una versión nueva. Por eso el tag lo crea Thomas.
 
 ## Antes del tag
 
-1. `main` con el CI en verde (`tests.yml`: tests con `-race` en Go 1.25 y 1.27, staticcheck,
+1. `main` con el CI en verde (`tests.yml`: tests con `-race` en Go 1.26 y 1.27, staticcheck,
    govulncheck y código generado al día).
 2. La verificación en vivo en verde ([verificacion-en-vivo.md](verificacion-en-vivo.md)).
 3. `caerus.Version` en `caerus.go` igual a la versión que se va a publicar, en un commit
