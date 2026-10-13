@@ -5,12 +5,11 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/caerus-dev/caerus-sdk-go"
 )
 
-const (
-	defaultLifetime    = 10 * time.Second
-	minRenewalInterval = time.Second
-)
+const defaultLifetime = 10 * time.Second
 
 type operations interface {
 	BeginTransaction(ctx context.Context, options *BeginTransactionOptions) (*Transaction, error)
@@ -29,6 +28,7 @@ type scope struct {
 	mu            sync.Mutex
 	closed        bool
 	lost          error
+	expiresAt     time.Time
 	stop          chan struct{}
 	done          chan struct{}
 	stopOnce      sync.Once
@@ -42,6 +42,7 @@ func runTransaction(ctx context.Context, ops operations, fn TransactionFunc, opt
 	if options != nil {
 		resolved = *options
 	}
+	started := time.Now()
 	transaction, err := ops.BeginTransaction(ctx, &BeginTransactionOptions{Timeout: resolved.Timeout})
 	if err != nil {
 		return err
@@ -52,6 +53,7 @@ func runTransaction(ctx context.Context, ops operations, fn TransactionFunc, opt
 		transactionID: transaction.TransactionID,
 		options:       resolved,
 		ctx:           scopeCtx,
+		expiresAt:     started.Add(lifetime(resolved)),
 		cancel:        cancel,
 		stop:          make(chan struct{}),
 		done:          make(chan struct{}),
@@ -72,6 +74,9 @@ func runTransaction(ctx context.Context, ops operations, fn TransactionFunc, opt
 	if lost := s.lostError(); lost != nil {
 		return lost
 	}
+	if s.expiredWhileRunning() {
+		return s.expiredError(nil)
+	}
 	return nil
 }
 
@@ -83,7 +88,7 @@ func lifetime(options TransactionOptions) time.Duration {
 }
 
 func renewalInterval(lifetime time.Duration) time.Duration {
-	return max(minRenewalInterval, lifetime/2)
+	return lifetime / 2
 }
 
 func (s *scope) TransactionID() string {
@@ -126,14 +131,22 @@ func (s *scope) RenewTransaction(ctx context.Context, extra time.Duration) (*Tra
 	if ctx == nil {
 		ctx = s.ctx
 	}
-	return s.ops.RenewTransaction(ctx, s.transactionID, extra)
+	transaction, err := s.ops.RenewTransaction(ctx, s.transactionID, extra)
+	if err == nil {
+		s.extend(extra)
+	}
+	return transaction, err
 }
 
 func (s *scope) heartbeat(ctx context.Context) {
 	defer close(s.done)
 	life := lifetime(s.options)
-	ticker := time.NewTicker(renewalInterval(life))
-	defer ticker.Stop()
+	interval := renewalInterval(life)
+	s.mu.Lock()
+	first := max(0, time.Until(s.expiresAt.Add(interval-life)))
+	s.mu.Unlock()
+	timer := time.NewTimer(first)
+	defer timer.Stop()
 	renewCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
@@ -148,22 +161,82 @@ func (s *scope) heartbeat(ctx context.Context) {
 		select {
 		case <-s.stop:
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
-		_, err := s.ops.RenewTransaction(renewCtx, s.transactionID, life)
+		err := s.renewOnce(renewCtx, life)
 		if s.isClosed() {
 			return
 		}
 		if err == nil {
 			failures = 0
+			timer.Reset(interval)
 			continue
 		}
 		failures++
-		if isGone(err) || failures >= 2 {
-			s.giveUp(err)
+		if isGone(err) || failures >= 2 || !s.alive() {
+			s.giveUp(s.lossOf(err))
 			return
 		}
+		timer.Reset(min(interval/4, s.remaining()))
 	}
+}
+
+func (s *scope) renewOnce(ctx context.Context, life time.Duration) error {
+	s.mu.Lock()
+	remaining := time.Until(s.expiresAt)
+	s.mu.Unlock()
+	if remaining <= 0 {
+		return s.expiredError(nil)
+	}
+	extra := life - remaining
+	if extra < time.Millisecond {
+		return nil
+	}
+	attempt, cancel := context.WithTimeout(ctx, remaining)
+	defer cancel()
+	if _, err := s.ops.RenewTransaction(attempt, s.transactionID, extra); err != nil {
+		return err
+	}
+	s.extend(extra)
+	return nil
+}
+
+func (s *scope) extend(extra time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expiresAt = s.expiresAt.Add(time.Duration(millis(extra)) * time.Millisecond)
+}
+
+func (s *scope) remaining() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return max(0, time.Until(s.expiresAt))
+}
+
+func (s *scope) alive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return time.Now().Before(s.expiresAt)
+}
+
+func (s *scope) expiredWhileRunning() bool {
+	if s.options.DisableAutoRenew && s.options.Timeout <= 0 {
+		return false
+	}
+	return !s.alive()
+}
+
+func (s *scope) lossOf(err error) error {
+	if isGone(err) || s.alive() {
+		return err
+	}
+	return s.expiredError(err)
+}
+
+func (s *scope) expiredError(cause error) error {
+	return NewTransactionNotActiveError(
+		"Transaction "+s.transactionID+" expired before it could be renewed",
+		&caerus.ErrorOptions{Cause: cause})
 }
 
 func (s *scope) giveUp(err error) {

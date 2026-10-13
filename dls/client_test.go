@@ -95,7 +95,7 @@ func TestRenewsOnItsOwnWhileTheWorkLasts(t *testing.T) {
 	te.Equal(t, calls.count("releaseAll"), 1)
 }
 
-func TestRenewsWithTheWholeLifetime(t *testing.T) {
+func TestRenewsByTheIntervalSoTheSafetyWindowStaysTheLifetime(t *testing.T) {
 	engine, _ := scripted(t)
 	var seen atomic.Pointer[dlspb.RenewTransactionRequest]
 	te.OnDLS(engine, "renewTransaction", func(_ context.Context, request *dlspb.RenewTransactionRequest) (*dlspb.RenewTransactionResponse, error) {
@@ -108,7 +108,7 @@ func TestRenewsWithTheWholeLifetime(t *testing.T) {
 	}, life(2*time.Second)))
 	te.True(t, seen.Load() != nil, "no renewal")
 	te.Equal(t, seen.Load().GetTransactionId(), "tx-1")
-	te.Equal(t, seen.Load().GetExtraMs(), int64(2000))
+	te.True(t, seen.Load().GetExtraMs() >= 1000 && seen.Load().GetExtraMs() <= 1300, "asked for %d ms", seen.Load().GetExtraMs())
 }
 
 func TestWithAutoRenewOffItSendsNotASingleHeartbeat(t *testing.T) {
@@ -245,10 +245,10 @@ func TestItsOwnContextStillCutsTheWaitInsideATransaction(t *testing.T) {
 	te.True(t, errors.Is(err, context.Canceled), "the cancellation should stay reachable")
 }
 
-func TestASlowRenewalIsNeverOverlappedByTheNextOne(t *testing.T) {
+func TestARenewalThatCannotFinishBeforeTheExpiryLosesTheTransactionInTime(t *testing.T) {
 	engine, _ := scripted(t)
 	var inFlight, maxInFlight, started atomic.Int32
-	te.OnDLS(engine, "renewTransaction", func(context.Context, *dlspb.RenewTransactionRequest) (*dlspb.RenewTransactionResponse, error) {
+	te.OnDLS(engine, "renewTransaction", func(ctx context.Context, _ *dlspb.RenewTransactionRequest) (*dlspb.RenewTransactionResponse, error) {
 		started.Add(1)
 		now := inFlight.Add(1)
 		for {
@@ -257,16 +257,103 @@ func TestASlowRenewalIsNeverOverlappedByTheNextOne(t *testing.T) {
 				break
 			}
 		}
-		time.Sleep(2500 * time.Millisecond)
-		inFlight.Add(-1)
+		defer inFlight.Add(-1)
+		select {
+		case <-time.After(2500 * time.Millisecond):
+		case <-ctx.Done():
+		}
 		return &dlspb.RenewTransactionResponse{TransactionId: "tx-1"}, nil
 	})
-	te.NoError(t, connect(t, engine, func(o *ClientOptions) { o.Timeout = 5 * time.Second }).WithTransaction(ctx, func(context.Context, Tx) error {
-		time.Sleep(3800 * time.Millisecond)
+	began := time.Now()
+	var cancelledAt time.Duration
+	err := connect(t, engine, func(o *ClientOptions) { o.Timeout = 5 * time.Second }).WithTransaction(ctx, func(ctx context.Context, _ Tx) error {
+		select {
+		case <-ctx.Done():
+			cancelledAt = time.Since(began)
+		case <-time.After(3800 * time.Millisecond):
+		}
+		return nil
+	}, life(2*time.Second))
+	te.As[*TransactionNotActiveError](t, err)
+	te.Contains(t, err.Error(), "expired before it could be renewed")
+	te.True(t, cancelledAt > 0 && cancelledAt <= 2200*time.Millisecond, "the callback learned it at %v, after the expiry", cancelledAt)
+	te.Equal(t, maxInFlight.Load(), int32(1))
+	te.Equal(t, started.Load(), int32(1))
+}
+
+func TestASlowBeginDoesNotMakeTheFirstRenewalLate(t *testing.T) {
+	engine, calls := scripted(t)
+	te.OnDLS(engine, "beginTransaction", func(context.Context, *dlspb.BeginTransactionRequest) (*dlspb.BeginTransactionResponse, error) {
+		time.Sleep(1200 * time.Millisecond)
+		calls.add("begin")
+		return &dlspb.BeginTransactionResponse{TransactionId: "tx-1"}, nil
+	})
+	te.NoError(t, connect(t, engine).WithTransaction(ctx, func(context.Context, Tx) error {
+		time.Sleep(2500 * time.Millisecond)
 		return nil
 	}, life(2*time.Second)))
-	te.Equal(t, maxInFlight.Load(), int32(1))
-	te.True(t, started.Load() >= 1 && started.Load() <= 2, "started %d renewals", started.Load())
+	te.True(t, calls.count("renew") >= 2, "renewed %d times", calls.count("renew"))
+}
+
+func TestASubSecondLifetimeIsRenewedBeforeItExpires(t *testing.T) {
+	engine, calls := scripted(t)
+	te.NoError(t, connect(t, engine).WithTransaction(ctx, func(context.Context, Tx) error {
+		time.Sleep(time.Second)
+		return nil
+	}, life(600*time.Millisecond)))
+	te.True(t, calls.count("renew") >= 2, "renewed %d times", calls.count("renew"))
+}
+
+func TestWorkThatOutlivesTheTransactionIsNotReportedAsASuccess(t *testing.T) {
+	engine, _ := scripted(t)
+	err := connect(t, engine).WithTransaction(ctx, func(context.Context, Tx) error {
+		time.Sleep(800 * time.Millisecond)
+		return nil
+	}, &TransactionOptions{Timeout: 500 * time.Millisecond, DisableAutoRenew: true})
+	te.Contains(t, te.As[*TransactionNotActiveError](t, err).Error(), "expired before it could be renewed")
+}
+
+func TestARetryAfterALateFailureNeverWaitsPastTheExpiry(t *testing.T) {
+	engine, _ := scripted(t)
+	te.OnDLS(engine, "renewTransaction", func(context.Context, *dlspb.RenewTransactionRequest) (*dlspb.RenewTransactionResponse, error) {
+		time.Sleep(1800 * time.Millisecond)
+		return nil, te.Status(codes.Unavailable, "se corto")
+	})
+	began := time.Now()
+	var cancelledAt time.Duration
+	err := connect(t, engine).WithTransaction(ctx, func(ctx context.Context, _ Tx) error {
+		select {
+		case <-ctx.Done():
+			cancelledAt = time.Since(began)
+		case <-time.After(6 * time.Second):
+		}
+		return nil
+	}, life(4*time.Second))
+	te.As[*TransactionNotActiveError](t, err)
+	te.True(t, cancelledAt > 0 && cancelledAt <= 4150*time.Millisecond, "the callback learned it at %v, after the expiry", cancelledAt)
+}
+
+func TestAManualRenewalAlsoMovesTheExpiryTheHeartbeatTracks(t *testing.T) {
+	engine, calls := scripted(t)
+	var extras []int64
+	var mu sync.Mutex
+	te.OnDLS(engine, "renewTransaction", func(_ context.Context, request *dlspb.RenewTransactionRequest) (*dlspb.RenewTransactionResponse, error) {
+		calls.add("renew")
+		mu.Lock()
+		extras = append(extras, request.GetExtraMs())
+		mu.Unlock()
+		return &dlspb.RenewTransactionResponse{TransactionId: "tx-1"}, nil
+	})
+	te.NoError(t, connect(t, engine).WithTransaction(ctx, func(ctx context.Context, tx Tx) error {
+		if _, err := tx.RenewTransaction(ctx, 5*time.Second); err != nil {
+			return err
+		}
+		time.Sleep(1300 * time.Millisecond)
+		return nil
+	}, life(2*time.Second)))
+	mu.Lock()
+	defer mu.Unlock()
+	te.Equal(t, extras, []int64{5000})
 }
 
 func TestOnceClosedTheContextCannotBeUsed(t *testing.T) {
