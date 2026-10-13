@@ -9,10 +9,7 @@ import (
 	"github.com/caerus-dev/caerus-sdk-go"
 )
 
-const (
-	defaultLifetime    = 10 * time.Second
-	minRenewalInterval = time.Second
-)
+const defaultLifetime = 10 * time.Second
 
 type operations interface {
 	BeginTransaction(ctx context.Context, options *BeginTransactionOptions) (*Transaction, error)
@@ -77,6 +74,9 @@ func runTransaction(ctx context.Context, ops operations, fn TransactionFunc, opt
 	if lost := s.lostError(); lost != nil {
 		return lost
 	}
+	if s.expiredWhileRunning() {
+		return s.expiredError(nil)
+	}
 	return nil
 }
 
@@ -88,7 +88,7 @@ func lifetime(options TransactionOptions) time.Duration {
 }
 
 func renewalInterval(lifetime time.Duration) time.Duration {
-	return max(minRenewalInterval, lifetime/2)
+	return lifetime / 2
 }
 
 func (s *scope) TransactionID() string {
@@ -211,6 +211,13 @@ func (s *scope) alive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return time.Now().Before(s.expiresAt)
+}
+
+func (s *scope) expiredWhileRunning() bool {
+	if s.options.DisableAutoRenew && s.options.Timeout <= 0 {
+		return false
+	}
+	return !s.alive()
 }
 
 func (s *scope) lossOf(err error) error {

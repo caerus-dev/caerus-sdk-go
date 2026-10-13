@@ -295,6 +295,24 @@ func TestASlowBeginDoesNotMakeTheFirstRenewalLate(t *testing.T) {
 	te.True(t, calls.count("renew") >= 2, "renewed %d times", calls.count("renew"))
 }
 
+func TestASubSecondLifetimeIsRenewedBeforeItExpires(t *testing.T) {
+	engine, calls := scripted(t)
+	te.NoError(t, connect(t, engine).WithTransaction(ctx, func(context.Context, Tx) error {
+		time.Sleep(time.Second)
+		return nil
+	}, life(600*time.Millisecond)))
+	te.True(t, calls.count("renew") >= 2, "renewed %d times", calls.count("renew"))
+}
+
+func TestWorkThatOutlivesTheTransactionIsNotReportedAsASuccess(t *testing.T) {
+	engine, _ := scripted(t)
+	err := connect(t, engine).WithTransaction(ctx, func(context.Context, Tx) error {
+		time.Sleep(800 * time.Millisecond)
+		return nil
+	}, &TransactionOptions{Timeout: 500 * time.Millisecond, DisableAutoRenew: true})
+	te.Contains(t, te.As[*TransactionNotActiveError](t, err).Error(), "expired before it could be renewed")
+}
+
 func TestAManualRenewalAlsoMovesTheExpiryTheHeartbeatTracks(t *testing.T) {
 	engine, calls := scripted(t)
 	var extras []int64
