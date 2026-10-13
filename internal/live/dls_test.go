@@ -276,7 +276,7 @@ func TestWithTransactionRenewsALongJob(t *testing.T) {
 	ok(t, err)
 	report(t, "una transaccion de 4 s sigue viva a los 7 s y su vencimiento avanza", []any{status, after - before})
 	check(t, status == "ACTIVE", "status %q", status)
-	check(t, after-before >= 8000, "expiry moved %d ms", after-before)
+	check(t, after-before >= 5000 && after-before <= 7000, "expiry moved %d ms in 7 s", after-before)
 }
 
 func TestAWrongAPIKeyIsAnAuthenticationErrorInTheDLS(t *testing.T) {

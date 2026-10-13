@@ -183,7 +183,7 @@ func TestWithTransactionRenewsOnItsOwn(t *testing.T) {
 		after = te.Must(mock.GetTransactionStatus(ctx, tx.TransactionID())).ExpiresAt
 		return nil
 	}, life(2*time.Second)))
-	te.Equal(t, after-before, int64(2000))
+	te.Equal(t, after-before, int64(1000))
 }
 
 func TestPreventsAcquireLockOnceTheContextIsClosed(t *testing.T) {
@@ -239,4 +239,15 @@ func TestAnExpiredTransactionCannotTakeLocksNorRenewLikeTheEngine(t *testing.T) 
 	_, err = mock.RenewTransaction(ctx, tx, time.Second)
 	te.As[*TransactionNotActiveError](t, err)
 	te.Equal(t, te.Must(mock.GetTransactionStatus(ctx, tx)).Status, "MAX_LIFETIME_EXCEEDED")
+}
+
+func TestTheSafetyWindowDoesNotGrowWithTheJob(t *testing.T) {
+	mock := NewInMemoryClient()
+	var left int64
+	te.NoError(t, mock.WithTransaction(ctx, func(_ context.Context, tx Tx) error {
+		time.Sleep(3300 * time.Millisecond)
+		left = te.Must(mock.GetTransactionStatus(ctx, tx.TransactionID())).ExpiresAt - time.Now().UnixMilli()
+		return nil
+	}, life(2*time.Second)))
+	te.True(t, left > 0 && left <= 2000, "a crash now would keep the locks %d ms", left)
 }

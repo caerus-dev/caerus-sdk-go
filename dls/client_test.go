@@ -95,7 +95,7 @@ func TestRenewsOnItsOwnWhileTheWorkLasts(t *testing.T) {
 	te.Equal(t, calls.count("releaseAll"), 1)
 }
 
-func TestRenewsWithTheWholeLifetime(t *testing.T) {
+func TestRenewsByTheIntervalSoTheSafetyWindowStaysTheLifetime(t *testing.T) {
 	engine, _ := scripted(t)
 	var seen atomic.Pointer[dlspb.RenewTransactionRequest]
 	te.OnDLS(engine, "renewTransaction", func(_ context.Context, request *dlspb.RenewTransactionRequest) (*dlspb.RenewTransactionResponse, error) {
@@ -108,7 +108,7 @@ func TestRenewsWithTheWholeLifetime(t *testing.T) {
 	}, life(2*time.Second)))
 	te.True(t, seen.Load() != nil, "no renewal")
 	te.Equal(t, seen.Load().GetTransactionId(), "tx-1")
-	te.Equal(t, seen.Load().GetExtraMs(), int64(2000))
+	te.Equal(t, seen.Load().GetExtraMs(), int64(1000))
 }
 
 func TestWithAutoRenewOffItSendsNotASingleHeartbeat(t *testing.T) {

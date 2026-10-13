@@ -131,8 +131,8 @@ func (s *scope) RenewTransaction(ctx context.Context, extra time.Duration) (*Tra
 
 func (s *scope) heartbeat(ctx context.Context) {
 	defer close(s.done)
-	life := lifetime(s.options)
-	ticker := time.NewTicker(renewalInterval(life))
+	interval := renewalInterval(lifetime(s.options))
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	renewCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -150,7 +150,7 @@ func (s *scope) heartbeat(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
-		_, err := s.ops.RenewTransaction(renewCtx, s.transactionID, life)
+		_, err := s.ops.RenewTransaction(renewCtx, s.transactionID, interval)
 		if s.isClosed() {
 			return
 		}
