@@ -313,6 +313,26 @@ func TestWorkThatOutlivesTheTransactionIsNotReportedAsASuccess(t *testing.T) {
 	te.Contains(t, te.As[*TransactionNotActiveError](t, err).Error(), "expired before it could be renewed")
 }
 
+func TestARetryAfterALateFailureNeverWaitsPastTheExpiry(t *testing.T) {
+	engine, _ := scripted(t)
+	te.OnDLS(engine, "renewTransaction", func(context.Context, *dlspb.RenewTransactionRequest) (*dlspb.RenewTransactionResponse, error) {
+		time.Sleep(1800 * time.Millisecond)
+		return nil, te.Status(codes.Unavailable, "se corto")
+	})
+	began := time.Now()
+	var cancelledAt time.Duration
+	err := connect(t, engine).WithTransaction(ctx, func(ctx context.Context, _ Tx) error {
+		select {
+		case <-ctx.Done():
+			cancelledAt = time.Since(began)
+		case <-time.After(6 * time.Second):
+		}
+		return nil
+	}, life(4*time.Second))
+	te.As[*TransactionNotActiveError](t, err)
+	te.True(t, cancelledAt > 0 && cancelledAt <= 4150*time.Millisecond, "the callback learned it at %v, after the expiry", cancelledAt)
+}
+
 func TestAManualRenewalAlsoMovesTheExpiryTheHeartbeatTracks(t *testing.T) {
 	engine, calls := scripted(t)
 	var extras []int64

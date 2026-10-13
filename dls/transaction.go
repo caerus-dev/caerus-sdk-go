@@ -177,7 +177,7 @@ func (s *scope) heartbeat(ctx context.Context) {
 			s.giveUp(s.lossOf(err))
 			return
 		}
-		timer.Reset(interval / 4)
+		timer.Reset(min(interval/4, s.remaining()))
 	}
 }
 
@@ -205,6 +205,12 @@ func (s *scope) extend(extra time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.expiresAt = s.expiresAt.Add(time.Duration(millis(extra)) * time.Millisecond)
+}
+
+func (s *scope) remaining() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return max(0, time.Until(s.expiresAt))
 }
 
 func (s *scope) alive() bool {
