@@ -97,8 +97,10 @@ Son las mismas que decidió el SDK de Java:
   para volver a tener la vida entera por delante. TS y Java suman la vida entera cada media vida,
   así que el vencimiento avanza el doble de rápido que el reloj y, si el proceso se cae, los locks
   quedan tomados tanto como duró el trabajo. En Go, después de una caída los locks quedan tomados
-  entre la mitad de la vida y la vida entera (con vidas de menos de 2 s, entre la vida menos 1 s y
-  la vida). Cada renovación se corta al llegar al vencimiento: si no llega a tiempo, la
+  entre la mitad de la vida y la vida entera, más lo que haya tardado el `BeginTransaction` (con
+  vidas de menos de 2 s, entre la vida menos 1 s y la vida). El SDK mide con su propio reloj desde
+  antes de pedir la transacción, no con el vencimiento que informa el motor: así un desfasaje entre
+  relojes no puede hacerle creer que la transacción sigue viva cuando no. Cada renovación se corta al llegar al vencimiento: si no llega a tiempo, la
   transacción se da por perdida (`*dls.TransactionNotActiveError`) y se cancela el `ctx` del
   callback antes de que siga trabajando sin locks.
 - La firma del webhook se calcula sobre los bytes crudos del cuerpo.

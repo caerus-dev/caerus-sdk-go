@@ -281,6 +281,20 @@ func TestARenewalThatCannotFinishBeforeTheExpiryLosesTheTransactionInTime(t *tes
 	te.Equal(t, started.Load(), int32(1))
 }
 
+func TestASlowBeginDoesNotMakeTheFirstRenewalLate(t *testing.T) {
+	engine, calls := scripted(t)
+	te.OnDLS(engine, "beginTransaction", func(context.Context, *dlspb.BeginTransactionRequest) (*dlspb.BeginTransactionResponse, error) {
+		time.Sleep(1200 * time.Millisecond)
+		calls.add("begin")
+		return &dlspb.BeginTransactionResponse{TransactionId: "tx-1"}, nil
+	})
+	te.NoError(t, connect(t, engine).WithTransaction(ctx, func(context.Context, Tx) error {
+		time.Sleep(2500 * time.Millisecond)
+		return nil
+	}, life(2*time.Second)))
+	te.True(t, calls.count("renew") >= 2, "renewed %d times", calls.count("renew"))
+}
+
 func TestAManualRenewalAlsoMovesTheExpiryTheHeartbeatTracks(t *testing.T) {
 	engine, calls := scripted(t)
 	var extras []int64
