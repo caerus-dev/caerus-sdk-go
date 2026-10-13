@@ -102,4 +102,3 @@ var noRenew = &TransactionOptions{DisableAutoRenew: true}
 func life(timeout time.Duration) *TransactionOptions {
 	return &TransactionOptions{Timeout: timeout}
 }
-
