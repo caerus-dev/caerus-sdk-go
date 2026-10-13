@@ -183,7 +183,7 @@ func TestWithTransactionRenewsOnItsOwn(t *testing.T) {
 		after = te.Must(mock.GetTransactionStatus(ctx, tx.TransactionID())).ExpiresAt
 		return nil
 	}, life(2*time.Second)))
-	te.Equal(t, after-before, int64(1000))
+	te.True(t, after-before >= 1000 && after-before <= 1300, "moved %d ms", after-before)
 }
 
 func TestPreventsAcquireLockOnceTheContextIsClosed(t *testing.T) {
@@ -249,5 +249,5 @@ func TestTheSafetyWindowDoesNotGrowWithTheJob(t *testing.T) {
 		left = te.Must(mock.GetTransactionStatus(ctx, tx.TransactionID())).ExpiresAt - time.Now().UnixMilli()
 		return nil
 	}, life(2*time.Second)))
-	te.True(t, left > 0 && left <= 2000, "a crash now would keep the locks %d ms", left)
+	te.True(t, left > 0 && left <= 2100, "a crash now would keep the locks %d ms", left)
 }

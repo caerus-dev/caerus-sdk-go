@@ -93,10 +93,14 @@ Son las mismas que decidió el SDK de Java:
 - Dentro de `WithTransaction`, una espera con su propio `ctx` también se corta si se pierde
   la transacción.
 - Las renovaciones nunca se superponen: la siguiente no sale hasta que vuelve la anterior.
-- La renovación automática suma el intervalo (media vida), no la vida entera. TS y Java suman
-  la vida entera cada media vida, así que el vencimiento avanza el doble de rápido que el reloj y,
-  si el proceso se cae, los locks quedan tomados tanto como duró el trabajo. En Go el margen
-  después de una caída es siempre la vida pedida.
+- La renovación automática lleva la cuenta del vencimiento y en cada renovación pide lo justo
+  para volver a tener la vida entera por delante. TS y Java suman la vida entera cada media vida,
+  así que el vencimiento avanza el doble de rápido que el reloj y, si el proceso se cae, los locks
+  quedan tomados tanto como duró el trabajo. En Go, después de una caída los locks quedan tomados
+  entre la mitad de la vida y la vida entera (con vidas de menos de 2 s, entre la vida menos 1 s y
+  la vida). Cada renovación se corta al llegar al vencimiento: si no llega a tiempo, la
+  transacción se da por perdida (`*dls.TransactionNotActiveError`) y se cancela el `ctx` del
+  callback antes de que siga trabajando sin locks.
 - La firma del webhook se calcula sobre los bytes crudos del cuerpo.
 - Un modo de lock sin especificar en `GetTransactionStatus` se informa como `EXCLUSIVE`,
   igual que el motor.
