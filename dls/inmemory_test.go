@@ -227,3 +227,16 @@ func TestRejectsCallsAfterBeingClosed(t *testing.T) {
 	te.Contains(t, te.As[*Error](t, err).Error(), "has been closed")
 	te.Contains(t, te.As[*Error](t, mock.ReleaseLock(ctx, "l", "t")).Error(), "has been closed")
 }
+
+func TestAnExpiredTransactionCannotTakeLocksNorRenewLikeTheEngine(t *testing.T) {
+	now := time.UnixMilli(1_000_000)
+	mock := newInMemoryClient(func() time.Time { return now })
+	tx := begin(t, mock)
+	now = now.Add(10 * time.Second)
+	_, err := mock.AcquireLock(ctx, "ns", "k", tx, Exclusive, nil)
+	notActive := te.As[*TransactionNotActiveError](t, err)
+	te.Equal(t, notActive.Reason(), caerus.ReasonTransactionNotActive)
+	_, err = mock.RenewTransaction(ctx, tx, time.Second)
+	te.As[*TransactionNotActiveError](t, err)
+	te.Equal(t, te.Must(mock.GetTransactionStatus(ctx, tx)).Status, "MAX_LIFETIME_EXCEEDED")
+}

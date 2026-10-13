@@ -16,7 +16,10 @@ import (
 	"github.com/caerus-dev/caerus-sdk-go/internal/logging"
 )
 
-const defaultMockLifetime = 10 * time.Second
+const (
+	defaultMockLifetime = 10 * time.Second
+	expiredStatus       = "MAX_LIFETIME_EXCEEDED"
+)
 
 type mockLock struct {
 	lockID         string
@@ -94,6 +97,9 @@ func (m *InMemoryClient) AcquireLock(ctx context.Context, namespace, lockKey, tr
 	if !m.activeTransactions[transactionID] {
 		return nil, NewNotFoundError("Transaction not found or expired", nil)
 	}
+	if err := m.requireAlive(transactionID); err != nil {
+		return nil, err
+	}
 	if mode != SharedRead {
 		mode = Exclusive
 	}
@@ -147,6 +153,9 @@ func (m *InMemoryClient) RenewTransaction(_ context.Context, transactionID strin
 	}
 	if !m.activeTransactions[transactionID] {
 		return nil, NewNotFoundError("Transaction not found", nil)
+	}
+	if err := m.requireAlive(transactionID); err != nil {
+		return nil, err
 	}
 	extraMs := millis(extra)
 	current, ok := m.txExpiration[transactionID]
@@ -228,6 +237,10 @@ func (m *InMemoryClient) GetTransactionStatus(_ context.Context, transactionID s
 		return nil, NewNotFoundError("Transaction not found", nil)
 	}
 	response := &TransactionStatusResponse{Status: "ACTIVE", Locks: []TransactionLockInfo{}, ExpiresAt: m.txExpiration[transactionID]}
+	if m.expired(transactionID) {
+		response.Status = expiredStatus
+		return response, nil
+	}
 	for _, key := range m.lockOrder {
 		for _, held := range m.locks[key] {
 			if held.transactionID == transactionID {
@@ -262,6 +275,20 @@ func (m *InMemoryClient) activeLocks(key string, now int64) []*mockLock {
 		}
 	}
 	return active
+}
+
+func (m *InMemoryClient) expired(transactionID string) bool {
+	expiresAt, ok := m.txExpiration[transactionID]
+	return ok && expiresAt <= m.nowMs()
+}
+
+func (m *InMemoryClient) requireAlive(transactionID string) error {
+	if !m.expired(transactionID) {
+		return nil
+	}
+	return NewTransactionNotActiveError(
+		"Transaction "+transactionID+" is already "+expiredStatus+".",
+		&caerus.ErrorOptions{Reason: caerus.ReasonTransactionNotActive})
 }
 
 func (m *InMemoryClient) guard() error {

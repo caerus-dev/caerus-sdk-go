@@ -3,7 +3,6 @@ package sre
 import (
 	"context"
 	"fmt"
-	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -84,7 +83,7 @@ type InMemoryClient struct {
 	failures        map[MockMethod][]error
 	defaultTTL      int64
 	defaultPageSize int
-	nowSeconds      int64
+	clock           time.Time
 	sequence        int
 	closed          bool
 }
@@ -100,7 +99,7 @@ func NewInMemoryClient(options *MockOptions) *InMemoryClient {
 		failures:        map[MockMethod][]error{},
 		defaultTTL:      int64(defaultMockTTL / time.Second),
 		defaultPageSize: defaultMockPageSize,
-		nowSeconds:      time.Now().Unix(),
+		clock:           time.Unix(time.Now().Unix(), 0),
 	}
 	if options.DefaultTTL > 0 {
 		client.defaultTTL = ceilDiv(options.DefaultTTL, time.Second)
@@ -119,7 +118,7 @@ func NewInMemoryClient(options *MockOptions) *InMemoryClient {
 			templateID:      templateID,
 			availableAmount: seed.AvailableAmount,
 			groupKey:        seed.GroupKey,
-			metadata:        maps.Clone(seed.Metadata),
+			metadata:        cloneMetadata(seed.Metadata),
 			createdAt:       client.now(),
 			updatedAt:       client.now(),
 		})
@@ -145,10 +144,10 @@ func (m *InMemoryClient) AdvanceTime(elapsed time.Duration) error {
 	if elapsed < 0 {
 		return NewValidationError("AdvanceTime needs a duration that is not negative", nil)
 	}
-	m.nowSeconds += int64(elapsed / time.Second)
+	m.clock = m.clock.Add(elapsed)
 	for _, id := range m.holderOrder {
 		holder := m.holders[id]
-		if holder.status == StatusPending && holder.expiresAt <= m.nowSeconds {
+		if holder.status == StatusPending && holder.expiresAt <= m.clock.Unix() {
 			m.giveBack(holder, StatusExpired)
 		}
 	}
@@ -222,7 +221,7 @@ func (m *InMemoryClient) createResource(templateName, key string, availableAmoun
 		templateID:      "tpl-" + templateName,
 		availableAmount: availableAmount,
 		groupKey:        options.GroupKey,
-		metadata:        maps.Clone(options.Metadata),
+		metadata:        cloneMetadata(options.Metadata),
 		createdAt:       m.now(),
 		updatedAt:       m.now(),
 	}
@@ -254,7 +253,7 @@ func (m *InMemoryClient) UpdateResource(_ context.Context, key string, deltaAmou
 		resource.groupKey = options.GroupKey
 	}
 	if options.Metadata != nil {
-		resource.metadata = maps.Clone(options.Metadata)
+		resource.metadata = cloneMetadata(options.Metadata)
 	}
 	resource.updatedAt = m.now()
 	return m.toResource(resource), nil
@@ -327,7 +326,7 @@ func (m *InMemoryClient) Confirm(_ context.Context, resourceHolderID string, opt
 	resource.pendingCount -= holder.amount
 	holder.status = StatusConfirmed
 	if options != nil && options.Metadata != nil {
-		holder.metadata = maps.Clone(options.Metadata)
+		holder.metadata = cloneMetadata(options.Metadata)
 	}
 	return m.toHolder(holder), nil
 }
@@ -504,8 +503,8 @@ func (m *InMemoryClient) take(resourceKey string, amount int, options *TakeOptio
 		resourceID:  resource.id,
 		amount:      amount,
 		status:      StatusPending,
-		expiresAt:   m.nowSeconds + ttl,
-		metadata:    maps.Clone(options.Metadata),
+		expiresAt:   m.clock.Unix() + ttl,
+		metadata:    cloneMetadata(options.Metadata),
 		createdAt:   m.now(),
 	}
 	m.holders[holder.id] = holder
@@ -569,7 +568,7 @@ func (m *InMemoryClient) toResource(resource *storedResource) *Resource {
 		AvailableAmount: resource.availableAmount,
 		PendingCount:    resource.pendingCount,
 		GroupKey:        resource.groupKey,
-		Metadata:        maps.Clone(resource.metadata),
+		Metadata:        cloneMetadata(resource.metadata),
 		CreatedAt:       resource.createdAt,
 		UpdatedAt:       resource.updatedAt,
 	}
@@ -582,13 +581,13 @@ func (m *InMemoryClient) toHolder(holder *storedHolder) *ResourceHolder {
 		Status:     holder.status,
 		Amount:     holder.amount,
 		ExpiresAt:  time.Unix(holder.expiresAt, 0),
-		Metadata:   maps.Clone(holder.metadata),
+		Metadata:   cloneMetadata(holder.metadata),
 		CreatedAt:  holder.createdAt,
 	}
 }
 
 func (m *InMemoryClient) now() time.Time {
-	return time.Unix(m.nowSeconds, 0)
+	return m.clock
 }
 
 func (m *InMemoryClient) nextID(prefix string) string {
@@ -606,4 +605,30 @@ func slice[T any](items []T, page, pageSize int) []T {
 
 func hasNextPage(total, page, pageSize int) bool {
 	return page*pageSize+pageSize < total
+}
+
+func cloneMetadata(metadata map[string]any) map[string]any {
+	if metadata == nil {
+		return nil
+	}
+	copied := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		copied[key] = cloneValue(value)
+	}
+	return copied
+}
+
+func cloneValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneMetadata(typed)
+	case []any:
+		copied := make([]any, len(typed))
+		for index, item := range typed {
+			copied[index] = cloneValue(item)
+		}
+		return copied
+	default:
+		return value
+	}
 }

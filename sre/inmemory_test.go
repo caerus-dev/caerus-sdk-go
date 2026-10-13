@@ -292,3 +292,23 @@ func TestTheMockAppliesTheSameValidationAsTheClient(t *testing.T) {
 	_, err = mock.Unitary("").Take(ctx, nil)
 	te.As[*ValidationError](t, err)
 }
+
+func TestAdvancingTheClockKeepsTheFractionsOfASecond(t *testing.T) {
+	mock := seeded(MockResourceSeed{Key: "g", AvailableAmount: 1})
+	holder := te.Must(mock.Pooled("g").Take(ctx, &TakeOptions{TTL: time.Second}))
+	te.NoError(t, mock.AdvanceTime(500*time.Millisecond))
+	te.Equal(t, te.Must(mock.GetResourceHolder(ctx, holder.ID)).Status, StatusPending)
+	te.NoError(t, mock.AdvanceTime(500*time.Millisecond))
+	te.Equal(t, te.Must(mock.GetResourceHolder(ctx, holder.ID)).Status, StatusExpired)
+}
+
+func TestNestedMetadataIsNotSharedWithTheCaller(t *testing.T) {
+	mock := NewInMemoryClient(nil)
+	given := map[string]any{"zona": map[string]any{"fila": "A"}, "asientos": []any{"A1", "A2"}}
+	resource := te.Must(mock.CreateUnitary(ctx, "butaca", "seat", &CreateResourceOptions{Metadata: given}))
+	given["zona"].(map[string]any)["fila"] = "B"
+	resource.Metadata["zona"].(map[string]any)["fila"] = "C"
+	resource.Metadata["asientos"].([]any)[0] = "Z9"
+	stored := te.Must(mock.GetResource(ctx, "seat")).Metadata
+	te.Equal(t, stored, map[string]any{"zona": map[string]any{"fila": "A"}, "asientos": []any{"A1", "A2"}})
+}

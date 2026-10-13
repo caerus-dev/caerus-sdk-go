@@ -96,6 +96,11 @@ Son las mismas que decidió el SDK de Java:
 - La firma del webhook se calcula sobre los bytes crudos del cuerpo.
 - Un modo de lock sin especificar en `GetTransactionStatus` se informa como `EXCLUSIVE`,
   igual que el motor.
+- `dls.InMemoryClient` rechaza `AcquireLock` y `RenewTransaction` de una transacción vencida
+  con `*dls.TransactionNotActiveError` (`TRANSACTION_NOT_ACTIVE`), como el motor, y
+  `GetTransactionStatus` la informa como `MAX_LIFETIME_EXCEEDED`. TS y Java la siguen aceptando.
+- `sre.InMemoryClient` copia la metadata en profundidad: modificar un mapa anidado de lo que
+  devuelve no cambia lo que guarda (como el motor, que la manda serializada).
 
 Y las propias de Go:
 
